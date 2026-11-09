@@ -62,7 +62,7 @@ public class TicketService {
         if (subirAS3) {
             awsS3Service.subirTicket(
                     bucketTickets,
-                    "tickets/" + nombreArchivo,
+                    construirRutaS3(evento, usuario, nombreArchivo),
                     archivo
             );
         }
@@ -72,6 +72,8 @@ public class TicketService {
 
     public File obtenerTicket(String nombreArchivo)
             throws IOException {
+
+        validarNombreArchivo(nombreArchivo);
 
         File archivo = efsService.obtenerTicket(nombreArchivo);
 
@@ -89,7 +91,14 @@ public class TicketService {
                                 int cantidad) throws IOException {
 
         validarDatos(evento, usuario, cantidad);
-        obtenerTicket(nombreArchivo);
+
+        File archivoAnterior = obtenerTicket(nombreArchivo);
+
+        String rutaAnterior = obtenerRutaS3DesdeArchivo(
+                archivoAnterior, nombreArchivo);
+
+        String rutaNueva = construirRutaS3(
+                evento, usuario, nombreArchivo);
 
         String id = nombreArchivo
                 .replace("ticket-", "")
@@ -115,9 +124,16 @@ public class TicketService {
         if (subirAS3) {
             awsS3Service.subirTicket(
                     bucketTickets,
-                    "tickets/" + nombreArchivo,
+                    rutaNueva,
                     archivoModificado
             );
+
+            if (!rutaAnterior.equals(rutaNueva)) {
+                awsS3Service.deleteObject(
+                        bucketTickets,
+                        rutaAnterior
+                );
+            }
         }
 
         return archivoModificado;
@@ -126,12 +142,15 @@ public class TicketService {
     public boolean eliminarTicket(String nombreArchivo)
             throws IOException {
 
-        obtenerTicket(nombreArchivo);
+        File archivo = obtenerTicket(nombreArchivo);
 
         if (subirAS3) {
+            String rutaS3 = obtenerRutaS3DesdeArchivo(
+                    archivo, nombreArchivo);
+
             awsS3Service.deleteObject(
                     bucketTickets,
-                    "tickets/" + nombreArchivo
+                    rutaS3
             );
         }
 
@@ -197,6 +216,66 @@ public class TicketService {
                 .toList();
     }
 
+    private String construirRutaS3(String evento,
+                                   String usuario,
+                                   String nombreArchivo) {
+
+        return "tickets/"
+                + normalizarSegmento(evento) + "/"
+                + normalizarSegmento(usuario) + "/"
+                + nombreArchivo;
+    }
+
+    private String normalizarSegmento(String valor) {
+
+        String resultado = valor.trim()
+                .replaceAll("[^a-zA-Z0-9_-]", "_");
+
+        if (resultado.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Evento o usuario no valido para S3");
+        }
+
+        return resultado;
+    }
+
+    private String obtenerRutaS3DesdeArchivo(
+            File archivo, String nombreArchivo) throws IOException {
+
+        List<String> lineas = Files.readAllLines(
+                archivo.toPath(), StandardCharsets.UTF_8);
+
+        String evento = null;
+        String usuario = null;
+
+        for (String linea : lineas) {
+            if (linea.startsWith("Evento: ")) {
+                evento = linea.substring(8).trim();
+            }
+
+            if (linea.startsWith("Usuario: ")) {
+                usuario = linea.substring(9).trim();
+            }
+        }
+
+        if (evento == null || usuario == null) {
+            throw new IOException(
+                    "No se pudo identificar el evento o usuario");
+        }
+
+        return construirRutaS3(evento, usuario, nombreArchivo);
+    }
+
+    private void validarNombreArchivo(String nombreArchivo) {
+
+        if (nombreArchivo == null ||
+                !nombreArchivo.matches(
+                        "ticket-[0-9a-fA-F-]{36}\\.txt")) {
+            throw new IllegalArgumentException(
+                    "Nombre de ticket no valido");
+        }
+    }
+
     private void validarDatos(String evento,
                               String usuario,
                               int cantidad) {
@@ -207,5 +286,8 @@ public class TicketService {
             throw new IllegalArgumentException(
                     "Los datos del ticket no son validos");
         }
+
+        normalizarSegmento(evento);
+        normalizarSegmento(usuario);
     }
 }
