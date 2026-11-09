@@ -6,6 +6,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -46,3 +47,38 @@ jobs:
           tags: |
             duckmoonoz/ms-administracion-archivos:latest
             duckmoonoz/ms-administracion-archivos:${{ github.sha }}
+
+  verificar-ec2:
+    name: Verificar acceso SSH a EC2
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Instalar clave SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Comprobar identidad del servidor
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh-keyscan -T 10 -H "$EC2_HOST" > ~/.ssh/known_hosts
+          test -s ~/.ssh/known_hosts
+
+      - name: Probar conexion SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            "$EC2_USER@$EC2_HOST" \
+            "echo SSH_OK && docker --version"
