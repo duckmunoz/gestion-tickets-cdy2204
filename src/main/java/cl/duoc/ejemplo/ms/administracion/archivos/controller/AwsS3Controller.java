@@ -34,7 +34,7 @@ public class AwsS3Controller {
 
 	/**
 	 * Lista todos los objetos en un bucket de S3
-	 * 
+	 *
 	 * @param bucket Nombre del bucket
 	 * @return Lista de objetos con sus metadatos
 	 */
@@ -47,7 +47,7 @@ public class AwsS3Controller {
 
 	/**
 	 * Descarga un objeto de S3 como array de bytes
-	 * 
+	 *
 	 * @param bucket Nombre del bucket
 	 * @param key    Clave del objeto a descargar
 	 * @return Archivo descargado como bytes
@@ -63,7 +63,7 @@ public class AwsS3Controller {
 
 	/**
 	 * Sube un archivo a S3 y lo almacena en EFS
-	 * 
+	 *
 	 * @param bucket Nombre del bucket
 	 * @param key    Clave del objeto
 	 * @param file   Archivo a subir
@@ -88,7 +88,7 @@ public class AwsS3Controller {
 
 	/**
 	 * Mueve un objeto dentro del mismo bucket
-	 * 
+	 *
 	 * @param bucket    Nombre del bucket
 	 * @param sourceKey Clave del objeto origen
 	 * @param destKey   Clave del objeto destino
@@ -104,7 +104,7 @@ public class AwsS3Controller {
 
 	/**
 	 * Elimina un objeto de S3
-	 * 
+	 *
 	 * @param bucket Nombre del bucket
 	 * @param key    Clave del objeto a eliminar
 	 * @return Respuesta sin contenido
