@@ -5,86 +5,89 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import java.nio.file.StandardCopyOption;
 
 @Service
 public class EfsService {
 
-    @Value("${efs.path}")
-    private String efsPath;
+    private final Path efsPath;
 
-    // Guarda archivos recibidos desde una petición HTTP
-    public File saveToEfs(String filename, MultipartFile multipartFile)
-            throws IOException {
-
-        Path destino = obtenerRutaSegura(filename);
-        Files.createDirectories(destino.getParent());
-
-        multipartFile.transferTo(destino.toFile());
-
-        return destino.toFile();
+    public EfsService(@Value("${efs.path:./tickets-local}") String ruta) {
+        this.efsPath = Path.of(ruta).toAbsolutePath().normalize();
     }
 
-    // Guarda archivos generados por nuestro sistema de tickets
+    private Path obtenerRutaSegura(String nombreArchivo) {
+        if (nombreArchivo == null ||
+            !nombreArchivo.matches("ticket-[0-9a-fA-F-]{36}\\.txt")) {
+            throw new IllegalArgumentException("Nombre de ticket no valido");
+        }
+
+        return efsPath.resolve(nombreArchivo).normalize();
+    }
+
     public File guardarTicket(String nombreArchivo, byte[] contenido)
             throws IOException {
 
-        Path destino = obtenerRutaSegura(nombreArchivo);
-        Files.createDirectories(destino.getParent());
+        Files.createDirectories(efsPath);
 
-        Files.write(destino, contenido);
+        Path ruta = obtenerRutaSegura(nombreArchivo);
+        Files.write(ruta, contenido);
 
-        return destino.toFile();
+        return ruta.toFile();
     }
 
-    // Evita guardar archivos fuera del directorio configurado
-    private Path obtenerRutaSegura(String nombreArchivo)
+    public File obtenerTicket(String nombreArchivo) {
+        return obtenerRutaSegura(nombreArchivo).toFile();
+    }
+
+    public File modificarTicket(String nombreArchivo, byte[] contenido)
             throws IOException {
 
-        Path base = Paths.get(efsPath).toAbsolutePath().normalize();
-        Path destino = base.resolve(nombreArchivo).normalize();
+        Path ruta = obtenerRutaSegura(nombreArchivo);
 
-        if (!destino.startsWith(base) || destino.equals(base)) {
-            throw new IOException("Ruta de archivo no permitida");
+        if (!Files.isRegularFile(ruta)) {
+            throw new java.io.FileNotFoundException("El ticket no existe");
         }
 
-        return destino;
+        Files.write(ruta, contenido);
+        return ruta.toFile();
     }
 
-	public File obtenerTicket(String nombreArchivo) {
-    return new File(efsPath, nombreArchivo);
-}
-// Modifica el contenido de un ticket existente
-public File modificarTicket(String nombreArchivo, byte[] contenido)
+    public boolean eliminarTicket(String nombreArchivo)
+            throws IOException {
+
+        Path ruta = obtenerRutaSegura(nombreArchivo);
+        return Files.deleteIfExists(ruta);
+    }
+
+    public File obtenerDirectorio() {
+        return efsPath.toFile();
+    }
+    public File saveToEfs(String nombreArchivo, MultipartFile archivo)
         throws IOException {
 
-    Path ruta = obtenerRutaSegura(nombreArchivo);
+    Files.createDirectories(efsPath);
 
-    if (!Files.isRegularFile(ruta)) {
-        throw new java.io.FileNotFoundException(
-            "El ticket no existe");
+    Path ruta = efsPath.resolve(nombreArchivo)
+            .normalize();
+
+    if (!ruta.startsWith(efsPath)) {
+        throw new IllegalArgumentException(
+                "Ruta de archivo no valida");
     }
 
-    Files.write(ruta, contenido);
+    try (var entrada = archivo.getInputStream()) {
+        Files.copy(
+                entrada,
+                ruta,
+                StandardCopyOption.REPLACE_EXISTING
+        );
+    }
 
     return ruta.toFile();
-}
-
-// Elimina un ticket existente
-public boolean eliminarTicket(String nombreArchivo)
-        throws IOException {
-
-    Path ruta = obtenerRutaSegura(nombreArchivo);
-
-    return Files.deleteIfExists(ruta);
-}
-
-// Obtiene el directorio de almacenamiento configurado
-public File obtenerDirectorio() {
-    return new File(efsPath);
 }
 }
