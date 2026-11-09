@@ -1,19 +1,21 @@
-FROM eclipse-temurin:22-jdk AS buildstage
 
-RUN apt-get update && apt-get install -y maven
+FROM maven:3.9-eclipse-temurin-21 AS buildstage
 
 WORKDIR /app
 
 COPY pom.xml .
-COPY src /app/src
-RUN mvn clean package
+COPY src ./src
 
-FROM eclipse-temurin:22-jdk
+RUN mvn -B clean package
 
-COPY --from=buildstage /app/target/ms-administracion-archivos-1.0.0.jar /app/app.jar
+FROM eclipse-temurin:21-jre
 
-EXPOSE 8080
+WORKDIR /app
+
+COPY --from=buildstage /app/target/ms-administracion-archivos-1.0.0.jar app.jar
 
 RUN mkdir -p /app/efs
 
-CMD ["java", "-jar", "/app/app.jar"]
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "app.jar"]
