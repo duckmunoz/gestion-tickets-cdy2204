@@ -1,0 +1,51 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+# Credenciales y archivos de entorno
+.env
+.env.*
+aws-s3.env
+*.pem
+
+# Configuraciones locales de VS Code
+.vscode/launch.json
+
+# Archivos generados por el sistema
+tickets-local/
+
+# Archivos compilados
+target/
+
+# Configuración local de AWS
+.aws/
