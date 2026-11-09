@@ -8,6 +8,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gestion-tickets-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Compilar, probar y publicar
@@ -28,18 +35,18 @@ jobs:
         run: mvn -B clean verify
 
       - name: Configurar Docker Buildx
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@v3
 
       - name: Iniciar sesion en Docker Hub
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Construir y publicar imagen Docker
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -51,12 +58,11 @@ jobs:
   verificar-ec2:
     name: Verificar acceso SSH a EC2
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      
       - name: Instalar clave SSH
         env:
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
@@ -65,17 +71,17 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
-          echo "Clave SSH cargada correctamente"
-
 
       - name: Comprobar identidad del servidor
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
         run: |
-          ssh-keyscan -T 10 -H "$EC2_HOST" > ~/.ssh/known_hosts
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
           test -s ~/.ssh/known_hosts
+          ssh-keygen -F "$EC2_HOST" -f ~/.ssh/known_hosts > /dev/null
 
       - name: Probar conexion SSH
         env:
@@ -84,6 +90,110 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key \
             -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=10 \
             "$EC2_USER@$EC2_HOST" \
-            "echo SSH_OK && docker --version"
+            "echo SSH_OK && sudo -n docker --version"
+
+  deploy:
+    name: Desplegar automaticamente en EC2
+    needs: [build, verificar-ec2]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Instalar clave SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Desplegar nueva imagen
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          IMAGE: duckmoonoz/ms-administracion-archivos:${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=10 \
+            "$EC2_USER@$EC2_HOST" \
+            "IMAGE='$IMAGE' bash -s" <<'EOF'
+          set -euo pipefail
+
+          NAME="gestion-tickets"
+          ENV_FILE="/home/ec2-user/aws-s3.env"
+          DATA_DIR="/home/ec2-user/tickets-data"
+
+          test -f "$ENV_FILE"
+          test -d "$DATA_DIR"
+
+          echo "Descargando nueva imagen..."
+          sudo -n docker pull "$IMAGE"
+
+          OLD_IMAGE=""
+          if sudo -n docker container inspect "$NAME" >/dev/null 2>&1; then
+            OLD_IMAGE=$(sudo -n docker inspect \
+              --format '{{.Image}}' "$NAME")
+          fi
+
+          echo "Preparando contenedor anterior..."
+          sudo -n docker rm -f "${NAME}-anterior" 2>/dev/null || true
+
+          if sudo -n docker container inspect "$NAME" >/dev/null 2>&1; then
+            sudo -n docker stop "$NAME"
+            sudo -n docker rename "$NAME" "${NAME}-anterior"
+          fi
+
+          echo "Iniciando nueva version..."
+          if ! sudo -n docker run -d \
+            --name "$NAME" \
+            --restart unless-stopped \
+            -p 8080:8080 \
+            --env-file "$ENV_FILE" \
+            -v "$DATA_DIR:/app/tickets-local" \
+            "$IMAGE"; then
+            echo "Fallo al iniciar. Restaurando version anterior."
+            sudo -n docker rm -f "$NAME" 2>/dev/null || true
+            if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
+              sudo -n docker start "${NAME}-anterior"
+              sudo -n docker rename "${NAME}-anterior" "$NAME"
+            fi
+            exit 1
+          fi
+
+          echo "Comprobando API..."
+          HEALTH_OK=false
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 3 \
+              http://127.0.0.1:8080/api/tickets/estadisticas \
+              -o /dev/null; then
+              HEALTH_OK=true
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$HEALTH_OK" != "true" ]; then
+            echo "La API no responde. Restaurando version anterior."
+            sudo -n docker logs --tail 40 "$NAME" || true
+            sudo -n docker rm -f "$NAME"
+            if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
+              sudo -n docker start "${NAME}-anterior"
+              sudo -n docker rename "${NAME}-anterior" "$NAME"
+            fi
+            exit 1
+          fi
+
+          echo "Despliegue verificado correctamente."
+          sudo -n docker rm -f "${NAME}-anterior" 2>/dev/null || true
+          sudo -n docker ps --filter "name=^/${NAME}$"
+          EOF
