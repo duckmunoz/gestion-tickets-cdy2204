@@ -131,47 +131,77 @@ jobs:
 
           NAME="gestion-tickets"
           ENV_FILE="/home/ec2-user/aws-s3.env"
-          DATA_DIR="/home/ec2-user/tickets-data"
+          DATA_DIR="/mnt/efs/tickets"
+
+          echo "Verificando configuracion..."
 
           test -f "$ENV_FILE"
-          test -d "$DATA_DIR"
+
+          if ! mountpoint -q /mnt/efs; then
+            echo "ERROR: Amazon EFS no esta montado"
+            exit 1
+          fi
+
+          if ! findmnt -n -o FSTYPE /mnt/efs | grep -qx nfs4; then
+            echo "ERROR: El montaje no corresponde a NFS4"
+            exit 1
+          fi
+
+          if ! findmnt -n -o SOURCE /mnt/efs | grep -q 'fs-06e00b7c89287c88c'; then
+            echo "ERROR: No esta montado el EFS esperado"
+            exit 1
+          fi
+
+          if [ ! -d "$DATA_DIR" ]; then
+            echo "ERROR: No existe el directorio de tickets en EFS"
+            exit 1
+          fi
+
+          echo "Amazon EFS verificado correctamente."
 
           echo "Descargando nueva imagen..."
           sudo -n docker pull "$IMAGE"
 
-          OLD_IMAGE=""
-          if sudo -n docker container inspect "$NAME" >/dev/null 2>&1; then
-            OLD_IMAGE=$(sudo -n docker inspect \
-              --format '{{.Image}}' "$NAME")
-          fi
-
           echo "Preparando contenedor anterior..."
-          sudo -n docker rm -f "${NAME}-anterior" 2>/dev/null || true
+
+          if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
+            echo "ERROR: Existe un contenedor de respaldo anterior."
+            echo "Revisarlo antes de continuar."
+            exit 1
+          fi
 
           if sudo -n docker container inspect "$NAME" >/dev/null 2>&1; then
             sudo -n docker stop "$NAME"
             sudo -n docker rename "$NAME" "${NAME}-anterior"
           fi
 
+          restaurar_anterior() {
+            echo "Restaurando version anterior..."
+            sudo -n docker rm -f "$NAME" 2>/dev/null || true
+
+            if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
+              sudo -n docker rename "${NAME}-anterior" "$NAME"
+              sudo -n docker start "$NAME"
+            fi
+          }
+
           echo "Iniciando nueva version..."
+
           if ! sudo -n docker run -d \
             --name "$NAME" \
             --restart unless-stopped \
             -p 8080:8080 \
             --env-file "$ENV_FILE" \
-            -v "$DATA_DIR:/app/tickets-local" \
+            --mount "type=bind,source=$DATA_DIR,target=/app/tickets-local" \
             "$IMAGE"; then
-            echo "Fallo al iniciar. Restaurando version anterior."
-            sudo -n docker rm -f "$NAME" 2>/dev/null || true
-            if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
-              sudo -n docker start "${NAME}-anterior"
-              sudo -n docker rename "${NAME}-anterior" "$NAME"
-            fi
+            echo "Fallo al iniciar el contenedor."
+            restaurar_anterior
             exit 1
           fi
 
           echo "Comprobando API..."
           HEALTH_OK=false
+
           for i in $(seq 1 20); do
             if curl -fsS --max-time 3 \
               http://127.0.0.1:8080/api/tickets/estadisticas \
@@ -185,15 +215,25 @@ jobs:
           if [ "$HEALTH_OK" != "true" ]; then
             echo "La API no responde. Restaurando version anterior."
             sudo -n docker logs --tail 40 "$NAME" || true
-            sudo -n docker rm -f "$NAME"
-            if sudo -n docker container inspect "${NAME}-anterior" >/dev/null 2>&1; then
-              sudo -n docker start "${NAME}-anterior"
-              sudo -n docker rename "${NAME}-anterior" "$NAME"
-            fi
+            restaurar_anterior
+            exit 1
+          fi
+
+          echo "Verificando volumen Docker..."
+
+          MOUNT_SOURCE=$(sudo -n docker inspect \
+            --format '{{range .Mounts}}{{if eq .Destination "/app/tickets-local"}}{{.Source}}{{end}}{{end}}' \
+            "$NAME")
+
+          if [ "$MOUNT_SOURCE" != "$DATA_DIR" ]; then
+            echo "ERROR: Docker no utiliza el directorio EFS esperado."
+            restaurar_anterior
             exit 1
           fi
 
           echo "Despliegue verificado correctamente."
+          echo "Amazon EFS conectado a Docker."
+
           sudo -n docker rm -f "${NAME}-anterior" 2>/dev/null || true
           sudo -n docker ps --filter "name=^/${NAME}$"
           EOF
